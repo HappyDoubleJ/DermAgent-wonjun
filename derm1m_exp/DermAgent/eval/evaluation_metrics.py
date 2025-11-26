@@ -103,20 +103,27 @@ class HierarchicalEvaluator:
     def hierarchical_similarity(self, label1: str, label2: str) -> float:
         """
         두 라벨 간의 계층적 유사도 (0.0 ~ 1.0)
-        
-        유사도 = 1 - (거리 / 최대_가능_거리)
+
+        Jaccard 유사도 기반 (root 제외):
+        Similarity = |Ancestors(A) ∩ Ancestors(B)| / |Ancestors(A) ∪ Ancestors(B)|
         """
         if label1 == label2:
             return 1.0
-        
-        distance = self.tree.get_hierarchical_distance(label1, label2)
-        if distance < 0:
+
+        # 조상 집합 구하기 (root 제외)
+        ancestors1 = set(self.tree.get_path_to_root(label1)) - {'root'}
+        ancestors2 = set(self.tree.get_path_to_root(label2)) - {'root'}
+
+        if not ancestors1 or not ancestors2:
             return 0.0
-        
-        # 최대 거리 = 2 * max_depth (완전히 다른 브랜치)
-        max_distance = 2 * self.max_depth
-        similarity = 1.0 - (distance / max_distance)
-        return max(0.0, similarity)
+
+        intersection = ancestors1 & ancestors2
+        union = ancestors1 | ancestors2
+
+        if not union:
+            return 0.0
+
+        return len(intersection) / len(union)
     
     def best_hierarchical_match(self, gt_label: str, pred_labels: List[str]) -> Tuple[Optional[str], float]:
         """

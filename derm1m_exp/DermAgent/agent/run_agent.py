@@ -18,7 +18,7 @@ SCRIPT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SCRIPT_DIR / "agent"))
 sys.path.insert(0, str(SCRIPT_DIR / "eval"))
 
-from dermatology_agent import DermatologyAgent, DiagnosisState
+from DermAgent.derm1m_exp.DermAgent.agent.derm_agent import DermatologyAgent, DiagnosisState
 from ontology_utils import OntologyTree
 from evaluation_metrics import HierarchicalEvaluator
 

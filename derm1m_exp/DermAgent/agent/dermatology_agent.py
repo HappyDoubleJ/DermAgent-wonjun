@@ -120,151 +120,130 @@ class OntologyNavigator(BaseTool):
 
 
 class DifferentialDiagnosisTool(BaseTool):
-    """감별 진단 도구"""
-    
-    def __init__(self, tree: OntologyTree):
+    """VLM 기반 동적 감별 진단 도구"""
+
+    def __init__(self, tree: OntologyTree, vlm_model=None):
         self.tree = tree
-        self._load_disease_features()
-    
-    def _load_disease_features(self):
-        """질환별 특징 데이터베이스 (확장 가능)"""
-        # 실제로는 외부 데이터베이스나 파일에서 로드
-        self.disease_features = {
-            # Fungal infections
-            "Tinea corporis": {
-                "morphology": ["annular", "scaly", "patch", "plaque"],
-                "color": ["red", "erythematous"],
-                "distribution": ["localized", "asymmetric"],
-                "keywords": ["ring", "circular", "scaling", "itchy"]
-            },
-            "Tinea pedis": {
-                "morphology": ["scaly", "fissured", "macerated"],
-                "color": ["red", "white"],
-                "location": ["foot", "feet", "toe"],
-                "keywords": ["athlete's foot", "interdigital"]
-            },
-            "Candidiasis": {
-                "morphology": ["erythematous", "satellite lesions", "pustules"],
-                "color": ["red", "white"],
-                "location": ["intertriginous", "oral", "genital"],
-                "keywords": ["thrush", "yeast", "satellite"]
-            },
-            # Bacterial infections
-            "Cellulitis": {
-                "morphology": ["diffuse", "edematous", "warm"],
-                "color": ["red", "erythematous"],
-                "symptoms": ["pain", "fever", "swelling"],
-                "keywords": ["spreading", "tender", "warm"]
-            },
-            "Folliculitis": {
-                "morphology": ["papules", "pustules", "follicular"],
-                "color": ["red", "yellow"],
-                "distribution": ["follicular"],
-                "keywords": ["hair follicle", "pustule"]
-            },
-            # Inflammatory - non-infectious
-            "Psoriasis": {
-                "morphology": ["plaque", "scaly", "well-demarcated"],
-                "color": ["red", "silvery"],
-                "distribution": ["symmetric", "extensor"],
-                "keywords": ["silvery scale", "auspitz sign", "koebner"]
-            },
-            "Eczema": {
-                "morphology": ["papules", "vesicles", "lichenification"],
-                "color": ["red", "erythematous"],
-                "symptoms": ["pruritus", "itching"],
-                "keywords": ["atopic", "itchy", "dry"]
-            },
-            "Atopic dermatitis": {
-                "morphology": ["papules", "vesicles", "lichenification", "excoriation"],
-                "color": ["red", "erythematous"],
-                "distribution": ["flexural"],
-                "keywords": ["atopic", "flexural", "childhood"]
-            },
-            # Add more diseases as needed...
-        }
+        self.vlm = vlm_model
     
     @property
     def name(self) -> str:
         return "differential_diagnosis"
-    
+
     @property
     def description(self) -> str:
-        return "Compare clinical features with candidate diseases for differential diagnosis"
-    
+        return "Compare clinical features with candidate diseases using VLM-based dynamic comparison"
+
     def execute(
-        self, 
-        candidates: List[str], 
-        observations: ObservationResult
+        self,
+        candidates: List[str],
+        observations: ObservationResult,
+        image_path: str = None
     ) -> Dict[str, float]:
         """
-        후보 질환들과 관찰 결과를 비교하여 점수 계산
-        
+        VLM을 사용하여 후보 질환들과 관찰 결과를 비교
+
+        Args:
+            candidates: 후보 질환 목록
+            observations: 관찰 결과
+            image_path: 이미지 경로 (VLM 사용 시 필요)
+
         Returns:
             {disease: score} 형태의 딕셔너리
         """
-        scores = {}
-        
-        for candidate in candidates:
-            canonical = self.tree.get_canonical_name(candidate)
-            if canonical is None:
-                continue
-            
-            score = self._calculate_match_score(canonical, observations)
-            scores[canonical] = score
-        
-        # 정규화
-        if scores:
-            max_score = max(scores.values())
-            if max_score > 0:
-                scores = {k: v / max_score for k, v in scores.items()}
-        
+        if self.vlm is None or image_path is None:
+            # VLM 없으면 균등 점수 (모든 후보에 동일 기회)
+            return {candidate: 0.5 for candidate in candidates}
+
+        # VLM으로 배치 비교
+        scores = self._compare_with_vlm_batch(candidates, observations, image_path)
+
         return dict(sorted(scores.items(), key=lambda x: x[1], reverse=True))
-    
-    def _calculate_match_score(
-        self, 
-        disease: str, 
-        observations: ObservationResult
-    ) -> float:
-        """질환과 관찰 결과 간의 매칭 점수 계산"""
-        features = self.disease_features.get(disease, {})
-        if not features:
-            return 0.5  # 알려진 특징이 없으면 중립 점수
-        
-        score = 0.0
-        weights = {"morphology": 0.3, "color": 0.15, "distribution": 0.15, 
-                   "location": 0.2, "keywords": 0.2}
-        
-        # Morphology matching
-        if features.get("morphology") and observations.morphology:
-            match_count = len(set(features["morphology"]) & set(observations.morphology))
-            score += weights["morphology"] * (match_count / len(features["morphology"]))
-        
-        # Color matching
-        if features.get("color") and observations.color:
-            match_count = len(set(features["color"]) & set(observations.color))
-            score += weights["color"] * (match_count / len(features["color"]))
-        
-        # Distribution matching
-        if features.get("distribution") and observations.distribution:
-            match_count = len(set(features["distribution"]) & set(observations.distribution))
-            score += weights["distribution"] * (match_count / len(features["distribution"]))
-        
-        # Location matching
-        if features.get("location") and observations.location:
-            for loc in features["location"]:
-                if loc.lower() in observations.location.lower():
-                    score += weights["location"]
-                    break
-        
-        # Keyword matching in raw description
-        if features.get("keywords") and observations.raw_description:
-            desc_lower = observations.raw_description.lower()
-            match_count = sum(1 for kw in features["keywords"] if kw.lower() in desc_lower)
-            if features["keywords"]:
-                score += weights["keywords"] * (match_count / len(features["keywords"]))
-        
-        return score
+
+    def _compare_with_vlm_batch(
+        self,
+        candidates: List[str],
+        observations: ObservationResult,
+        image_path: str
+    ) -> Dict[str, float]:
+        """
+        한 번의 VLM 호출로 모든 후보 질환 비교
+
+        비용 효율적이고 상대적 비교 가능
+        """
+        if not candidates:
+            return {}
+
+        # 후보 목록 포맷팅
+        candidates_list = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidates)])
+
+        # 관찰 결과 포맷팅
+        obs_text = f"""
+Morphology: {', '.join(observations.morphology) if observations.morphology else 'not specified'}
+Color: {', '.join(observations.color) if observations.color else 'not specified'}
+Distribution: {', '.join(observations.distribution) if observations.distribution else 'not specified'}
+Surface: {', '.join(observations.surface) if observations.surface else 'not specified'}
+Location: {observations.location if observations.location else 'not specified'}
+"""
+
+        prompt = f"""Compare this skin lesion with the following candidate diagnoses and rate each one.
+
+Candidate Diagnoses:
+{candidates_list}
+
+Observed Clinical Features:
+{obs_text}
+
+For EACH candidate diagnosis, evaluate:
+1. How well do the observed features match the typical presentation of this disease?
+2. What features support this diagnosis?
+3. What features contradict this diagnosis?
+4. Overall likelihood score (0-10)
+
+Respond in JSON format:
+{{
+    "comparisons": [
+        {{
+            "disease": "exact disease name from the list",
+            "likelihood_score": 0-10,
+            "supporting_features": ["feature1", "feature2"],
+            "contradicting_features": ["feature1", "feature2"],
+            "brief_reasoning": "one sentence explanation"
+        }},
+        ... (one entry for each candidate)
+    ]
+}}
+
+IMPORTANT: Include ALL {len(candidates)} candidates in your response. Provide ONLY the JSON output."""
+
+        try:
+            response = self.vlm.chat_img(prompt, [image_path], max_tokens=2048)
+            # JSON 파싱
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                comparisons = parsed.get("comparisons", [])
+
+                scores = {}
+                for comp in comparisons:
+                    disease = comp.get("disease", "")
+                    likelihood = comp.get("likelihood_score", 5)
+                    # 0-10 스케일을 0-1로 변환
+                    scores[disease] = likelihood / 10.0
+
+                # 누락된 후보들에게 중립 점수
+                for candidate in candidates:
+                    if candidate not in scores:
+                        scores[candidate] = 0.5
+
+                return scores
+            else:
+                # 파싱 실패 시 균등 점수
+                return {candidate: 0.5 for candidate in candidates}
+
+        except Exception:
+            # VLM 호출 실패 시 균등 점수
+            return {candidate: 0.5 for candidate in candidates}
 
 
 class DermatologyAgent:
@@ -283,7 +262,7 @@ class DermatologyAgent:
         # 도구 초기화
         self.tools = {
             "navigator": OntologyNavigator(self.tree),
-            "differential": DifferentialDiagnosisTool(self.tree),
+            "differential": DifferentialDiagnosisTool(self.tree, self.vlm),
         }
         
         # 루트 카테고리 (Level 1)
@@ -296,19 +275,26 @@ class DermatologyAgent:
         """프롬프트 템플릿 로드"""
         self.prompts = {
             "initial_assessment": """Analyze this dermatological image and describe what you observe.
-Focus on:
-1. Morphology (shape, type of lesion): papule, macule, plaque, vesicle, pustule, nodule, patch, etc.
-2. Color: red, brown, white, pink, purple, yellow, etc.
-3. Distribution pattern: localized, generalized, symmetric, clustered, linear, etc.
-4. Surface features: scaly, crusted, smooth, rough, ulcerated, etc.
-5. Body location: face, trunk, extremities, hands, feet, etc.
+Focus on PRIMARY LESION MORPHOLOGY - be VERY specific:
+1. Morphology (primary lesion type):
+   - Flat lesions: macule, patch
+   - Raised solid lesions: papule, plaque, nodule, wheal, tumor
+   - Fluid-filled lesions: vesicle, bulla, pustule
+   - Loss of tissue: erosion, ulcer, fissure, excoriation
+   - Other: cyst, comedo, abscess
+2. Color: red, pink, brown, black, white, yellow, purple, blue, skin-colored, etc.
+3. Distribution pattern: localized, generalized, symmetric, asymmetric, clustered, linear, dermatomal, follicular, etc.
+4. Surface features: smooth, scaly, crusted, rough, verrucous, ulcerated, eroded, lichenified, etc.
+5. Border: well-defined, ill-defined, regular, irregular, raised, rolled
+6. Body location: face, trunk, extremities, hands, feet, oral cavity, genitals, scalp, etc.
 
 Provide your observations in JSON format:
 {
-    "morphology": ["list of observed morphological features"],
+    "morphology": ["list of PRIMARY lesion types - be very specific"],
     "color": ["list of colors observed"],
     "distribution": ["distribution patterns"],
     "surface": ["surface features"],
+    "border": ["border characteristics"],
     "location": "body location",
     "additional_notes": "any other relevant observations"
 }
@@ -570,11 +556,12 @@ Provide ONLY the JSON output."""
         
         self._log(f"  Candidates: {len(state.candidates)} diseases")
         
-        # 감별 진단 도구 사용
+        # 감별 진단 도구 사용 (VLM 기반)
         if state.observations:
             diff_scores = self.tools["differential"].execute(
-                state.candidates, 
-                state.observations
+                state.candidates,
+                state.observations,
+                image_path  # VLM이 이미지를 직접 보고 비교
             )
             state.confidence_scores.update(diff_scores)
             self._log(f"  Top 3: {list(diff_scores.items())[:3]}")

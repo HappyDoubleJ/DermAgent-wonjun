@@ -271,82 +271,144 @@ Actions: get_children, get_path, get_siblings, get_parent, search"""
 
 
 class CompareCandidatesTool(Tool):
-    """후보 질환 비교 도구"""
-    
-    def __init__(self, tree: OntologyTree, disease_features: Dict):
+    """VLM 기반 동적 후보 질환 비교 도구"""
+
+    def __init__(self, tree: OntologyTree, vlm_model=None):
         self.tree = tree
-        self.disease_features = disease_features
-    
+        self.vlm = vlm_model
+
     @property
     def name(self) -> str:
         return "compare_candidates"
-    
+
     @property
     def description(self) -> str:
-        return """Compare clinical observations with candidate diseases to score likelihood.
-Returns ranked list of candidates with matching features."""
-    
+        return """Compare clinical observations with candidate diseases using VLM-based dynamic comparison.
+Returns ranked list of candidates with likelihood scores."""
+
     @property
     def parameters(self) -> Dict:
         return {
             "candidates": "List of candidate disease names",
-            "observations": "Dict of observed clinical features"
+            "observations": "Dict of observed clinical features",
+            "image_path": "Path to the dermatological image (required for VLM comparison)"
         }
-    
-    def run(self, candidates: List[str], observations: Dict) -> str:
-        scores = {}
-        details = {}
-        
-        for candidate in candidates:
-            canonical = self.tree.get_canonical_name(candidate)
-            if not canonical:
-                continue
-            
-            features = self.disease_features.get(canonical, {})
-            score, matches = self._calculate_score(features, observations)
-            scores[canonical] = score
-            details[canonical] = matches
-        
-        # 정규화 및 정렬
-        if scores:
-            max_score = max(scores.values()) or 1
-            scores = {k: v/max_score for k, v in scores.items()}
-        
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        
-        return json.dumps({
-            "ranked_candidates": [
-                {"disease": d, "score": round(s, 3), "matching_features": details.get(d, [])}
-                for d, s in ranked[:10]
+
+    def run(self, candidates: List[str], observations: Dict, image_path: str = None) -> str:
+        """
+        VLM을 사용하여 후보 질환들을 비교하고 점수 매기기
+
+        Args:
+            candidates: 후보 질환 목록
+            observations: 관찰된 임상 특징
+            image_path: 이미지 경로 (VLM 사용 시 필요)
+        """
+        if self.vlm is None or image_path is None:
+            # VLM 없으면 균등 점수
+            ranked = [
+                {"disease": c, "score": 0.5, "supporting_features": [], "contradicting_features": []}
+                for c in candidates[:10]
             ]
-        })
-    
-    def _calculate_score(self, features: Dict, observations: Dict) -> Tuple[float, List[str]]:
-        if not features:
-            return 0.5, []
-        
-        score = 0.0
-        matches = []
-        
-        for key in ["morphology", "color", "distribution", "surface"]:
-            feat_list = features.get(key, [])
-            obs_list = observations.get(key, [])
-            
-            if feat_list and obs_list:
-                common = set(f.lower() for f in feat_list) & set(o.lower() for o in obs_list)
-                if common:
-                    score += len(common) / len(feat_list)
-                    matches.extend(list(common))
-        
-        # Keywords in raw text
-        keywords = features.get("keywords", [])
-        raw_text = observations.get("raw_text", "").lower()
-        for kw in keywords:
-            if kw.lower() in raw_text:
-                score += 0.2
-                matches.append(f"keyword:{kw}")
-        
-        return score, matches
+            return json.dumps({"ranked_candidates": ranked})
+
+        # VLM으로 배치 비교
+        return self._compare_with_vlm_batch(candidates, observations, image_path)
+
+    def _compare_with_vlm_batch(self, candidates: List[str], observations: Dict, image_path: str) -> str:
+        """
+        한 번의 VLM 호출로 모든 후보 비교 (비용 효율적)
+        """
+        if not candidates:
+            return json.dumps({"ranked_candidates": []})
+
+        # 후보 목록 포맷팅
+        candidates_list = "\n".join([f"{i+1}. {c}" for i, c in enumerate(candidates)])
+
+        # 관찰 결과 포맷팅
+        obs_formatted = []
+        if observations.get("morphology"):
+            obs_formatted.append(f"Morphology: {', '.join(observations['morphology'])}")
+        if observations.get("color"):
+            obs_formatted.append(f"Color: {', '.join(observations['color'])}")
+        if observations.get("distribution"):
+            obs_formatted.append(f"Distribution: {', '.join(observations['distribution'])}")
+        if observations.get("surface"):
+            obs_formatted.append(f"Surface: {', '.join(observations['surface'])}")
+        if observations.get("location"):
+            obs_formatted.append(f"Location: {observations['location']}")
+
+        obs_text = "\n".join(obs_formatted) if obs_formatted else "Not specified"
+
+        prompt = f"""Compare this skin lesion with the following candidate diagnoses.
+
+Candidate Diagnoses:
+{candidates_list}
+
+Observed Clinical Features:
+{obs_text}
+
+For EACH candidate, evaluate how well the image and observed features match the typical presentation of that disease.
+
+Respond in JSON format:
+{{
+    "comparisons": [
+        {{
+            "disease": "exact disease name from list",
+            "likelihood_score": 0-10,
+            "supporting_features": ["features that support this diagnosis"],
+            "contradicting_features": ["features that contradict this diagnosis"]
+        }},
+        ... (include ALL {len(candidates)} candidates)
+    ]
+}}
+
+Provide ONLY the JSON output."""
+
+        try:
+            response = self.vlm.chat_img(prompt, [image_path], max_tokens=2048)
+
+            # JSON 파싱
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                comparisons = parsed.get("comparisons", [])
+
+                # 점수 정규화 (0-10 → 0-1)
+                ranked = []
+                for comp in comparisons:
+                    disease = comp.get("disease", "")
+                    likelihood = comp.get("likelihood_score", 5)
+                    ranked.append({
+                        "disease": disease,
+                        "score": round(likelihood / 10.0, 3),
+                        "supporting_features": comp.get("supporting_features", []),
+                        "contradicting_features": comp.get("contradicting_features", [])
+                    })
+
+                # 점수 순으로 정렬
+                ranked.sort(key=lambda x: x["score"], reverse=True)
+
+                # 누락된 후보들 추가 (중립 점수)
+                included_diseases = {r["disease"] for r in ranked}
+                for candidate in candidates:
+                    if candidate not in included_diseases:
+                        ranked.append({
+                            "disease": candidate,
+                            "score": 0.5,
+                            "supporting_features": [],
+                            "contradicting_features": []
+                        })
+
+                return json.dumps({"ranked_candidates": ranked[:10]})
+            else:
+                # 파싱 실패
+                ranked = [{"disease": c, "score": 0.5, "supporting_features": [], "contradicting_features": []} for c in candidates[:10]]
+                return json.dumps({"ranked_candidates": ranked})
+
+        except Exception:
+            # VLM 호출 실패
+            ranked = [{"disease": c, "score": 0.5, "supporting_features": [], "contradicting_features": []} for c in candidates[:10]]
+            return json.dumps({"ranked_candidates": ranked})
 
 
 class VerifyDiagnosisTool(Tool):
@@ -415,10 +477,7 @@ class ReActDermatologyAgent:
         
         # 프롬프트 로드
         self._init_prompts()
-        
-        # 질환 특징 데이터베이스
-        self._init_disease_features()
-        
+
         # 도구 초기화
         self._init_tools()
     
@@ -494,163 +553,12 @@ Output JSON:
 }}"""
         }
     
-    def _init_disease_features(self):
-        """질환별 특징 데이터베이스 초기화"""
-        self.disease_features = {
-            # Fungal
-            "Tinea corporis": {
-                "morphology": ["annular", "scaly", "patch", "plaque", "ring"],
-                "color": ["red", "erythematous", "pink"],
-                "distribution": ["localized", "asymmetric"],
-                "surface": ["scaly", "slightly elevated border"],
-                "keywords": ["ring", "ringworm", "circular", "central clearing"]
-            },
-            "Tinea pedis": {
-                "morphology": ["scaly", "fissured", "macerated", "vesicular"],
-                "color": ["red", "white"],
-                "distribution": ["interdigital", "moccasin"],
-                "location": ["foot", "feet", "toe"],
-                "keywords": ["athlete's foot", "interdigital", "itchy feet"]
-            },
-            "Tinea versicolor": {
-                "morphology": ["macule", "patch", "scaly"],
-                "color": ["hypopigmented", "hyperpigmented", "pink", "tan"],
-                "distribution": ["trunk", "upper arms", "neck"],
-                "keywords": ["sun spots", "versicolor", "pityriasis"]
-            },
-            "Candidiasis": {
-                "morphology": ["erythematous", "satellite lesions", "pustules", "macerated"],
-                "color": ["red", "white"],
-                "distribution": ["intertriginous"],
-                "location": ["groin", "axilla", "inframammary", "oral"],
-                "keywords": ["thrush", "yeast", "satellite pustules", "diaper"]
-            },
-            
-            # Bacterial
-            "Cellulitis": {
-                "morphology": ["diffuse", "edematous", "indurated"],
-                "color": ["red", "erythematous"],
-                "distribution": ["unilateral", "localized"],
-                "surface": ["warm", "tender"],
-                "keywords": ["spreading", "tender", "fever", "swelling"]
-            },
-            "Impetigo": {
-                "morphology": ["vesicles", "pustules", "crusts", "bullae"],
-                "color": ["honey-colored", "yellow", "golden"],
-                "distribution": ["localized", "perioral", "perinasal"],
-                "surface": ["crusted"],
-                "keywords": ["honey crust", "golden crust", "children"]
-            },
-            "Folliculitis": {
-                "morphology": ["papules", "pustules", "follicular"],
-                "color": ["red", "yellow"],
-                "distribution": ["follicular", "scattered"],
-                "keywords": ["hair follicle", "pustule", "shaving"]
-            },
-            
-            # Inflammatory - Eczema
-            "Atopic dermatitis": {
-                "morphology": ["papules", "vesicles", "lichenification", "excoriation"],
-                "color": ["red", "erythematous"],
-                "distribution": ["flexural", "symmetric"],
-                "surface": ["dry", "scaly", "lichenified"],
-                "keywords": ["atopic", "flexural", "itchy", "childhood", "eczema"]
-            },
-            "Contact dermatitis": {
-                "morphology": ["vesicles", "papules", "edema", "erythema"],
-                "color": ["red"],
-                "distribution": ["geometric", "localized", "linear"],
-                "keywords": ["contact", "exposure", "allergic", "irritant"]
-            },
-            "Seborrheic dermatitis": {
-                "morphology": ["scaly", "patch", "greasy"],
-                "color": ["red", "yellow"],
-                "distribution": ["scalp", "face", "nasolabial"],
-                "surface": ["greasy scale", "yellowish"],
-                "keywords": ["dandruff", "seborrheic", "nasolabial", "scalp"]
-            },
-            
-            # Inflammatory - Psoriasis
-            "Psoriasis": {
-                "morphology": ["plaque", "scaly", "papule"],
-                "color": ["red", "silvery"],
-                "distribution": ["symmetric", "extensor"],
-                "surface": ["silvery scale", "thick scale"],
-                "border": ["well-defined"],
-                "keywords": ["silvery scale", "auspitz", "koebner", "extensor"]
-            },
-            "Guttate psoriasis": {
-                "morphology": ["papules", "small plaques", "drop-like"],
-                "color": ["pink", "red"],
-                "distribution": ["generalized", "trunk"],
-                "keywords": ["guttate", "drop-like", "strep", "children"]
-            },
-            
-            # Viral
-            "Herpes simplex virus": {
-                "morphology": ["vesicles", "grouped", "erosions", "crusts"],
-                "color": ["clear", "yellow"],
-                "distribution": ["grouped", "clustered"],
-                "location": ["lip", "genital", "perioral"],
-                "keywords": ["cold sore", "fever blister", "grouped vesicles"]
-            },
-            "Herpes zoster": {
-                "morphology": ["vesicles", "papules", "crusts"],
-                "color": ["clear", "hemorrhagic"],
-                "distribution": ["dermatomal", "unilateral"],
-                "keywords": ["shingles", "dermatomal", "painful", "unilateral"]
-            },
-            "Molluscum contagiosum": {
-                "morphology": ["papules", "umbilicated", "dome-shaped"],
-                "color": ["skin-colored", "pink", "pearly"],
-                "distribution": ["grouped", "localized"],
-                "keywords": ["umbilicated", "central dimple", "children", "pearly"]
-            },
-            
-            # Benign tumors
-            "Seborrheic keratosis": {
-                "morphology": ["papule", "plaque", "stuck-on"],
-                "color": ["brown", "tan", "black", "waxy"],
-                "surface": ["verrucous", "waxy", "rough"],
-                "border": ["well-defined"],
-                "keywords": ["stuck-on", "waxy", "elderly", "horn cysts"]
-            },
-            "Dermatofibroma": {
-                "morphology": ["nodule", "papule", "firm"],
-                "color": ["brown", "pink", "tan"],
-                "distribution": ["solitary"],
-                "location": ["extremities", "leg"],
-                "keywords": ["dimple sign", "firm", "button-like"]
-            },
-            
-            # Malignant
-            "Basal cell carcinoma": {
-                "morphology": ["nodule", "papule", "ulcer", "pearly"],
-                "color": ["pink", "pearly", "translucent"],
-                "border": ["rolled border"],
-                "surface": ["telangiectasia", "ulcerated"],
-                "keywords": ["pearly", "rolled border", "telangiectasia", "rodent ulcer"]
-            },
-            "Squamous cell carcinoma": {
-                "morphology": ["nodule", "plaque", "ulcer", "keratotic"],
-                "color": ["red", "pink", "flesh-colored"],
-                "surface": ["scaly", "crusted", "ulcerated"],
-                "keywords": ["sun-exposed", "keratotic", "indurated", "ulcerated"]
-            },
-            "Melanoma": {
-                "morphology": ["macule", "papule", "nodule", "asymmetric"],
-                "color": ["brown", "black", "variegated", "blue", "red"],
-                "border": ["irregular", "notched"],
-                "keywords": ["ABCDE", "asymmetry", "border irregular", "color variegation", "diameter", "evolving"]
-            }
-        }
-    
     def _init_tools(self):
         """도구 초기화"""
         self.tools = {
             "observe_image": ObserveTool(self.vlm, self.prompts),
             "navigate_ontology": NavigateOntologyTool(self.tree),
-            "compare_candidates": CompareCandidatesTool(self.tree, self.disease_features),
+            "compare_candidates": CompareCandidatesTool(self.tree, self.vlm),
             "verify_diagnosis": VerifyDiagnosisTool(self.vlm, self.tree, self.prompts),
         }
     
@@ -674,16 +582,19 @@ Output JSON:
         
         return action, action_input
     
-    def _execute_tool(self, tool_name: str, params: Dict) -> str:
+    def _execute_tool(self, tool_name: str, params: Dict, image_path: str = None) -> str:
         """도구 실행"""
         if tool_name == "conclude":
             return json.dumps(params)
-        
+
         tool = self.tools.get(tool_name)
         if tool is None:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
-        
+
         try:
+            # compare_candidates와 verify_diagnosis는 image_path 필요
+            if tool_name in ["compare_candidates", "verify_diagnosis"] and image_path:
+                params["image_path"] = image_path
             return tool.run(**params)
         except Exception as e:
             return json.dumps({"error": str(e)})
@@ -776,8 +687,8 @@ Thought:"""
         # 도구 실행
         if action == "observe_image":
             action_input["image_path"] = image_path
-        
-        observation = self._execute_tool(action, action_input)
+
+        observation = self._execute_tool(action, action_input, image_path)
         
         return thought, action, action_input, observation
     
