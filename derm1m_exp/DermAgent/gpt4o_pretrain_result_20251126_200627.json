@@ -1,0 +1,80 @@
+{
+  "image_path": "/home/work/wonjun/DermAgent/dataset/Derm1M/IIYI/26549_2.png",
+  "final_diagnosis": [
+    "Pityriasis rosea",
+    "Lichen planus"
+  ],
+  "diagnosis_path": [
+    "inflammatory",
+    "Inflammatory dermatosis"
+  ],
+  "confidence_scores": {
+    "inflammatory": 0.8,
+    "Inflammatory dermatosis": 1.0,
+    "Pityriasis rosea": 0.8
+  },
+  "observations": {
+    "morphology": [
+      "macule",
+      "papule"
+    ],
+    "color": [
+      "brown",
+      "pink"
+    ],
+    "distribution": [
+      "generalized"
+    ],
+    "location": "trunk"
+  },
+  "reasoning_history": [
+    {
+      "step": "initial_assessment",
+      "observations": {
+        "morphology": [
+          "macule",
+          "papule"
+        ],
+        "color": [
+          "brown",
+          "pink"
+        ],
+        "distribution": [
+          "generalized"
+        ],
+        "surface": [
+          "smooth",
+          "scaly"
+        ],
+        "location": "trunk",
+        "additional_notes": "Lesions appear varied in size and are scattered across the trunk."
+      },
+      "raw_response": "```json\n{\n    \"morphology\": [\"macule\", \"papule\"],\n    \"color\": [\"brown\", \"pink\"],\n    \"distribution\": [\"generalized\"],\n    \"surface\": [\"smooth\", \"scaly\"],\n    \"location\": \"trunk\",\n    \"additional_notes\": \"Lesions appear varied in size and are scattered across the trunk.\"\n}\n```"
+    },
+    {
+      "step": "category_classification",
+      "selected": "inflammatory",
+      "confidence": 0.8,
+      "reasoning": "The image shows erythematous lesions with possible scaling, indicative of an inflammatory skin condition."
+    },
+    {
+      "step": "subcategory_level_1",
+      "parent": "inflammatory",
+      "selected": "Inflammatory dermatosis",
+      "confidence": 0.8
+    },
+    {
+      "step": "final_diagnosis",
+      "primary": "Pityriasis Rosea",
+      "differentials": [
+        "Secondary Syphilis",
+        "Lichen Planus"
+      ],
+      "confidence": 0.8,
+      "reasoning": "The clinical presentation of generalized pink and brown macules and papules on the trunk is characteristic of Pityriasis Rosea, especially given the inflammatory nature. The distribution and morphology match common presentations of this condition. Secondary syphilis and lichen planus are considered but less likely due to the color and generalized distribution."
+    }
+  ],
+  "candidates_considered": [
+    "Inflammatory dermatosis"
+  ]
+}

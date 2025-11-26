@@ -19,6 +19,12 @@ BASELINE_ROOT = os.path.join(EXP_ROOT, "baseline")
 RANDOM_SAMPLES_100 = os.path.join(DERM1M_ROOT, "random_samples_100")
 SAMPLED_DATA_CSV = os.path.join(RANDOM_SAMPLES_100, "sampled_data.csv")
 
+# Ontology path
+ONTOLOGY_PATH = os.path.join(DERM1M_ROOT, "ontology.json")
+
+# DermAgent paths
+DERMAGENT_ROOT = os.path.join(EXP_ROOT, "DermAgent")
+
 # Output paths
 OUTPUTS_ROOT = os.path.join(BASELINE_ROOT, "outputs")
 
@@ -26,5 +32,7 @@ if __name__ == "__main__":
     print(f"PROJECT_PATH: {PROJECT_PATH}")
     print(f"DATASET_ROOT: {DATASET_ROOT}")
     print(f"DERM1M_ROOT: {DERM1M_ROOT}")
+    print(f"ONTOLOGY_PATH: {ONTOLOGY_PATH}")
+    print(f"DERMAGENT_ROOT: {DERMAGENT_ROOT}")
     print(f"BASELINE_ROOT: {BASELINE_ROOT}")
     print(f"SAMPLED_DATA_CSV: {SAMPLED_DATA_CSV}")
